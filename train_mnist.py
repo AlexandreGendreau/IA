@@ -11,10 +11,15 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from mnist_net import MNISTNet
+#use it if you have module 'tensorflow._api.v2.io.gfile' has no attribute 'get_filesystem' error
+# import tensorflow as tf
+# import tensorboard as tb
+# tf.io.gfile = tb.compat.tensorflow_stub.io.gfile
 
+ # setting device on GPU if available, else CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def train(net, optimizer, loader, epochs=10):
+def train(net, optimizer, loader, epochs=10, writer=None):
     criterion = nn.CrossEntropyLoss()
     for epoch in range(epochs):
         running_loss = []
@@ -28,6 +33,8 @@ def train(net, optimizer, loader, epochs=10):
             loss.backward()
             optimizer.step()
             t.set_description(f'training loss: {mean(running_loss)}')
+        if writer is not None:
+            writer.add_scalar('training loss', mean(running_loss), epoch)
 
 def test(model, dataloader):
     test_corrects = 0
@@ -42,19 +49,20 @@ def test(model, dataloader):
     return test_corrects / total
 
 if __name__=='__main__':
-
+#TODO remove exp_name and add batch_size
   parser = argparse.ArgumentParser()
-  
   parser.add_argument('--exp_name', type=str, default = 'MNIST', help='experiment name')
-  parser.add_argument(...)
-  parser.add_argument(...)
-  parser.add_argument(...)
+  parser.add_argument('--batch_size', type=int, default = int(64), help='batch_size')
+  parser.add_argument('--lr', type=float, default = float(1e-3), help='learning rate')
+  parser.add_argument('--epochs', type=int, default = int(10), help='epochs')
 
   args = parser.parse_args()
   exp_name = args.exp_name
-  epochs = ...
-  batch_size = ...
-  lr = ...
+  batch_size = args.batch_size
+  lr = args.lr
+  epochs = args.epochs
+
+ 
 
   # transforms
   transform = transforms.Compose(
@@ -68,13 +76,32 @@ if __name__=='__main__':
   # dataloaders
   trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2)
   testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=2)
-  
-  net = ...
-  # setting net on device(GPU if available, else CPU)
-  net = net.to(device)
-  optimizer = optim.SGD(...)
 
-  train(...)
-  test_acc = test(...)
-  print(f'Test accuracy:{test_acc}')
+  net = MNISTNet().to(device)
+  # default `log_dir` is "runs" - we'll be more specific here
+  writer = SummaryWriter(f'runs/{exp_name}')
+    
+  optimizer = optim.SGD(net.parameters(), lr=lr, momentum=0.9)
+
+  train(net, optimizer, trainloader, epochs, writer)
+  test_acc = test(net, testloader)
+  # for experiment management
+  writer.add_hparams({'lr': lr, 'bsize': batch_size}, {'hparam/accuracy': test_acc}, run_name='MNIST')
+
+
+  #add embeddings to tensorboard
+  perm = torch.randperm(len(trainset.data))
+  images, labels = trainset.data[perm][:256], trainset.targets[perm][:256]
+  images = images.unsqueeze(1).float().to(device)
+  with torch.no_grad():
+    embeddings = net.get_features(images)
+    writer.add_embedding(embeddings,
+                  metadata=labels,
+                  label_img=images, global_step=1)
+    
+  # save networks computational graph in tensorboard
+  writer.add_graph(net, images)
+  # save a dataset sample in tensorboard
+  img_grid = torchvision.utils.make_grid(images[:64])
+  writer.add_image('mnist_images', img_grid)
   torch.save(net.state_dict(), "mnist_net.pth")
